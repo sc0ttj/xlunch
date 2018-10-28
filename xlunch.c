@@ -32,6 +32,7 @@ const int VERSION_PATCH = 12; // Patch version, changes when something is change
 #include <ctype.h>
 /* one instance */
 #include <sys/file.h>
+#include <sys/stat.h>
 /* check stdin */
 #include <sys/poll.h>
 #include <errno.h>
@@ -141,6 +142,7 @@ static struct option long_options[] =
         {"borderratio",           required_argument, 0, 1017},
         {"sideborderratio",       required_argument, 0, 1018},
         {"scroll",                no_argument,       0, 1019},
+        {"iconvpadding",          required_argument, 0, 1020},
         {"button",                required_argument, 0, 'A'},
         {"textafter",             no_argument,       0, 'a'},
         {"border",                required_argument, 0, 'b'},
@@ -192,6 +194,7 @@ int rows;
 int column_margin = 0;
 int row_margin = 0;
 int icon_padding = 10;
+int icon_v_padding = -1;
 int text_padding = 10;
 int border;
 int side_border = 0;
@@ -209,6 +212,7 @@ int prompt_y;
 char * background_file = "";
 char * highlight_file = "";
 char * input_file = "";
+char * config_file = "";
 FILE * input_source = NULL;
 char * prompt = "";
 char * font_name = "";
@@ -275,19 +279,18 @@ void recalc_cells()
 {
     int margined_cell_width, margined_cell_height;
 
-    if (least_v_margin == -1) least_v_margin = least_margin;
     if (text_after){
         cell_width=icon_size+icon_padding*2;
-        cell_height=icon_size+icon_padding*2;
+        cell_height=icon_size+icon_v_padding*2;
         margined_cell_width=icon_size+icon_padding*2+least_margin;
-        margined_cell_height=icon_size+icon_padding*2+least_v_margin;
+        margined_cell_height=icon_size+icon_v_padding*2+least_v_margin;
         if(ucolumns == 0)
             ucolumns = 1;
     } else {
         cell_width=icon_size+icon_padding*2;
-        cell_height=icon_size+icon_padding*2+font_height+text_padding;
+        cell_height=icon_size+icon_v_padding*2+font_height+text_padding;
         margined_cell_width=icon_size+icon_padding*2+least_margin;
-        margined_cell_height=icon_size+icon_padding*2+font_height+text_padding+least_v_margin;
+        margined_cell_height=icon_size+icon_v_padding*2+font_height+text_padding+least_v_margin;
     }
 
     border = screen_width/10;
@@ -728,7 +731,7 @@ FILE * determine_input_source(){
         }
         if (fp == NULL)
         {
-            fprintf(stderr, "Error opening entries file from %s.\nReverting back to system conf.\n", input_file);
+            fprintf(stderr, "Error opening entries file from %s.\nReverting back to system entries list.\n", input_file);
             input_file = "/etc/xlunch/entries.dsv";
             fp = fopen(input_file, "rb");
 
@@ -747,6 +750,28 @@ FILE * determine_input_source(){
     }
     return fp;
 }
+
+FILE * determine_config_source(){
+    FILE * fp;
+    if(strlen(config_file) == 0) {
+        char * homeconf = NULL;
+
+        char * home = getenv("HOME");
+        if (home!=NULL)
+        {
+            homeconf = concat(home,"/.config/xlunch/xlunch.conf");
+        }
+        fp = fopen(homeconf, "rb");
+        if(fp == NULL) {
+            fp = fopen("/etc/xlunch/default.conf", "rb");
+        }
+        free(homeconf);
+    } else {
+        fp = fopen(config_file, "rb");
+    }
+    return fp;
+}
+
 
 int mouse_over_cell(node_t * cell, int index, int mouse_x, int mouse_y)
 {
@@ -1447,7 +1472,7 @@ void parse_config(FILE *input) {
         if(readstatus <= 0){
             break;
         }
-        if(b == ':' || b == '\n') {
+        if((b == ':' && optarg == NULL) || b == '\n') {
             if (b == '\n') eol = 1;
             b = '\0';
         }
@@ -1565,6 +1590,10 @@ void handle_option(int c, char *optarg) {
 
         case 'I':
             icon_padding = atoi(optarg);
+            break;
+
+        case 1020:
+            icon_v_padding = atoi(optarg);
             break;
 
         case 'T':
@@ -1771,7 +1800,7 @@ void handle_option(int c, char *optarg) {
             break;
 
         case 1014:
-            parse_config(fopen(optarg, "rb"));
+            config_file = optarg;
             break;
 
         case 1015:
@@ -1879,6 +1908,8 @@ void handle_option(int c, char *optarg) {
                             "        -L, --highlight [file]             Image set as highlighting under selected icon\n"
                             "                                           (jpg/png)\n"
                             "        -I, --iconpadding [i]              Padding around icons (default: 10)\n"
+                            "            --iconvpadding [i]             Vertical padding around icons (default: same as\n"
+                            "                                           iconpadding)\n"
                             "        -T, --textpadding [i]              Padding around entry titles (default: 10)\n"
                             "        -c, --columns [i]                  Number of columns to show (without this the max\n"
                             "                                           amount possible is used)\n"
@@ -1947,7 +1978,16 @@ void init(int argc, char **argv)
     while ((c = getopt_long(argc, argv, "vdr:ng:L:b:B:s:i:p:f:mc:x:y:w:h:oatGHI:T:P:WF:SqROMuXeCl:V:U:A:", long_options, &option_index)) != -1) {
         handle_option(c, optarg);
     }
-    //parse_config(fopen("/home/peter/.xlunchrc", "rb"));
+
+    FILE *config_source = determine_config_source();
+    if(config_source != NULL){
+        parse_config(config_source);
+        fclose(config_source);
+    }
+
+
+    if (least_v_margin == -1) least_v_margin = least_margin;
+    if (icon_v_padding == -1) icon_v_padding = icon_padding;
 
     /* connect to X */
     disp = XOpenDisplay(NULL);
@@ -1957,7 +1997,9 @@ void init(int argc, char **argv)
         exit(WINERROR);
     }
 
-    XMatchVisualInfo(disp, DefaultScreen(disp), 32, TrueColor, &vinfo);
+    if (!XMatchVisualInfo(disp, DefaultScreen(disp), 32, TrueColor, &vinfo)) {
+        XMatchVisualInfo(disp, DefaultScreen(disp), 24, TrueColor, &vinfo);
+    }
 
     attr.colormap = XCreateColormap(disp, DefaultRootWindow(disp), vinfo.visual, AllocNone);
     attr.border_pixel = 0;
@@ -2238,7 +2280,7 @@ void renderEntry(Imlib_Image buffer, char title[256], node_t * current, Cursor *
             else d=0;
             int x = current->x - up_x +
                         (text_other_side && text_after ? cell_width - icon_padding - icon_size : icon_padding)+d;
-            int y = current->y - up_y +(text_other_side && !text_after ? cell_height - icon_padding - icon_size : icon_padding)+d;
+            int y = current->y - up_y +(text_other_side && !text_after ? cell_height - icon_v_padding - icon_size : icon_v_padding)+d;
 
             imlib_blend_image_onto_image(image, 1, 0, 0, w, h, x, y, icon_size-d*2, icon_size-d*2);
 
@@ -2273,7 +2315,7 @@ void renderEntry(Imlib_Image buffer, char title[256], node_t * current, Cursor *
         if (text_after) {
             draw_text_with_shadow(current->x - up_x + (text_other_side ? text_padding : (icon_size != 0 ? (padding_swap ? icon_padding + text_padding : icon_padding*2) : icon_padding) + icon_size), current->y - up_y + cell_height/2 - font_height/2, title, text_color);
         } else {
-            draw_text_with_shadow(current->x - up_x + cell_width/2 - text_w/2, current->y - up_y + (text_other_side ? text_padding : (padding_swap ? icon_padding + text_padding : icon_padding*2) + icon_size), title, text_color);
+            draw_text_with_shadow(current->x - up_x + cell_width/2 - text_w/2, current->y - up_y + (text_other_side ? text_padding : (padding_swap ? icon_v_padding + text_padding : icon_v_padding*2) + icon_size), title, text_color);
         }
 
         /* free the font */
@@ -2306,7 +2348,9 @@ int main(int argc, char **argv){
     // If an instance is already running, quit
     if (!multiple_instances)
     {
-        lock=open("/tmp/xlunch.lock",O_CREAT | O_RDWR,0666);
+        int oldmask = umask(0);
+        lock = open("/tmp/xlunch.lock", O_CREAT | O_RDWR, 0666);
+        umask(oldmask);
         int rc = flock(lock, LOCK_EX | LOCK_NB);
         if (rc) {
             if (errno == EWOULDBLOCK) fprintf(stderr,"xlunch already running. You may want to consider --multiple\nIf this is an error, you may remove /tmp/xlunch.lock\n");
